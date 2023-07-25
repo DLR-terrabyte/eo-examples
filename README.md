@@ -1,4 +1,4 @@
-# Examples to work with Earth Observation data on terrabyte
+# Examples of working with Earth observation data on terrabyte
 
 The terrabyte Team provides initially basic examples on how to work with Earth Observation data on the terrabyte Platform. 
 

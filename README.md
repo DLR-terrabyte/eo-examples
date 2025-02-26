@@ -46,7 +46,8 @@ These examples demonstrate how to run HPC jobs on the terrabyte cluster using SL
 In the examples, a job is to run a simple python script that takes a number as input and executes a multiplication of this number by 2. The result is printed as a string. 
 
 Jobs can be submitted to the scheduler with `sbatch <slurm_script.sh>`
-Make sure to adjust the email address in the example slurm scripts to receive notifictaion mails. 
+<br>Make sure to adjust the email address in the example slurm scripts to receive notification mails. 
+<br>cd into *~/eo-examples/hpc_slurm/* before running the examples.
 
 The first example consists of a simple slurm script that submits just a single job to the scheduler. Here, the python software module is used. 
 The second example consists of a more advanced slurm script that submits an array of 10 parallel jobs to the scheduler. It uses a charliecloud python-container for processing. The number passed to the python script in each job is determined by the array-id in the range 1 - 10. 

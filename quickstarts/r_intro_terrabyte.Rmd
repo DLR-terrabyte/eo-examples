@@ -1,0 +1,236 @@
+---
+title: "R on terrabyte"
+subtitle: "First steps with R on terrabyte"
+output: html_notebook
+---
+
+This notebook gives a brief introduction to R on terrabyte.
+
+# R on terrabyte
+
+## Request a session
+
+Request an R-Studio session via the terrabyte portal: <https://portal.terrabyte.lrz.de/>. Choose the RAM and cores needed for the analysis, as well as the time you need it for. The R-Studio session will run in a docker container on terrabyte.
+
+## Installing packages on terrabyte
+
+In the packages viewer there's a user library and a system library. The system library shows pre-installed packages. The user library shows the ones you are installing via `install.packages()`.
+
+**System Libraries:** Terrabyte users do not have the rights to install system libraries such as gdal for example. Packages that have these dependencies cannot be installed by users. If a system dependency is missing, `install.packages()` will fail telling you to install the system dependency outside of R. This is not possible for users. To mitigate this situation there is a large list of common geospatial packages pre-installed. If you need packages that you cannot install let us know in the forum.
+
+## Lib Paths
+
+By default the packages are installed here (in your home folder):
+
+```{r}
+.libPaths()
+```
+
+## Working Direcory
+
+The default working directory is the home folder
+
+```{r}
+getwd()
+```
+
+# Libraries
+
+```{r}
+library(sf) # Linking to GEOS 3.10.2, GDAL 3.4.1, PROJ 8.2.1; sf_use_s2() is TRUE
+library(stars)
+library(rstac) # user
+library(gdalcubes) # user
+library(mapview)
+library(mapedit)
+```
+
+# Terrabyte STAC API
+
+Tutorial on rstac: <https://stacspec.org/en/tutorials/1-download-data-using-r/>.
+
+Terrabyte STAC browser for interactive search: <https://stac.terrabyte.lrz.de/browser/>
+
+## Discovery
+
+For programmatic interaction use the STAC API. The package `rstac` manages interaction with the STAC API. First connect to the STAC API.
+
+```{r}
+stac_url = "https://stac.terrabyte.lrz.de/public/api"
+stac_obj = stac(stac_url)
+
+get_request(stac_obj)
+```
+
+```{r}
+cols_query = collections(stac_obj)
+cols = get_request(cols_query)
+cols
+```
+
+All collections have a description etc.
+
+```{r}
+cols$collections[[1]]
+```
+
+Extract information from all collections, here the available ids.
+
+```{r}
+cols_id = lapply(X = cols$collections, FUN = function(x){x$id})
+unlist(cols_id)
+```
+
+```{r}
+cols_temp = lapply(X = cols$collections, FUN = function(x){
+  data.frame(id = x$id,
+             from = x$extent$temporal$interval[[1]][1], 
+             to = x$extent$temporal$interval[[1]][2])})
+dplyr::bind_rows(cols_temp)
+```
+
+## Search
+
+Now that we know what is available in the STAC API we can search collections for specific extents.
+
+```{r}
+collection = "sentinel-2-c1-l2a"
+datetime = "2024-05-01T00:00:00Z/2024-11-01T12:31:12Z" # "2024-05-01/2024-10-01"
+```
+
+```{r}
+aoi = mapedit::drawFeatures()
+```
+
+```{r}
+aoi_bbox = st_bbox(aoi)
+aoi_bbox
+```
+
+```{r}
+items_query = stac_search(q = stac_obj, 
+                          collections = collection, 
+                          bbox = aoi_bbox, 
+                          datetime = datetime, 
+                          limit = 100) # intersects = aoi
+# add cloud filter!
+items = get_request(items_query)
+length(items$features)
+```
+
+```{r}
+red_urls = sapply(items$features, function(x){x$assets$B04$href})
+red_urls = gsub("file://","",red_urls) # remove prefix file://
+
+nir_urls = sapply(items$features, function(x){x$assets$B08$href})
+nir_urls = gsub("file://","",nir_urls)
+nir_urls[1]
+```
+
+# Load data from STAC urls
+
+The URLs can directly be used to load the data into R. Ideally a library that supports lazy loading should be used, e.g. `stars` or `gdalcubes`.
+
+## stars
+
+Tutorial on stars: <https://r-spatial.github.io/stars/articles/stars1.html>
+
+Load a small subset directly into memory to check the values.
+
+```{r}
+tst_r = read_stars(red_urls[1], RasterIO = list(nXOff = 1, 
+                                                nYOff = 1, 
+                                                nXSize = 10, 
+                                                nYSize = 10))
+tst_n = read_stars(nir_urls[1], RasterIO = list(nXOff = 1, 
+                                                nYOff = 1, 
+                                                nXSize = 10, 
+                                                nYSize = 10))
+tst_ndvi = (tst_n - tst_r) / (tst_n + tst_r)
+plot(tst_ndvi)
+```
+
+Use `proxy = True` to enable lazy loading. Data is only loaded when asked to. So long we are creating a workflow that will be executed when asked to. Tutorial: <https://r-spatial.github.io/stars/articles/stars2.html#stars-proxy-objects> Here is a list of support functions on stars proxy objects.
+
+```{r}
+methods(class = "stars_proxy")
+```
+
+```{r}
+red = read_stars(red_urls, along = "time", proxy = TRUE)  # Lazy loading
+nir = read_stars(nir_urls, along = "time", proxy = TRUE)  # Lazy loading
+
+aoi_proj = st_transform(aoi, crs = st_crs(red))
+
+red = red[aoi_proj] # subset as early as possible
+nir = nir[aoi_proj] # subset as early as possible
+ndvi = (nir - red) / (nir + red)
+
+ndvi_val = st_as_stars(ndvi) # load data
+ndvi_val
+```
+
+Add time values to time dimension. Doesn't really work on proxy objects (?).
+
+```{r}
+time_values = sapply(items$features, function(x) x$properties$datetime)
+time_values = as.POSIXct(time_values, format="%Y-%m-%dT%H:%M:%OSZ", tz="UTC")
+ndvi_val = st_set_dimensions(ndvi_val, 3, values = time_values, names = "time") # somehow doesn't work on proxy objects
+st_get_dimension_values(ndvi_val, which = "time")
+class(st_get_dimension_values(ndvi_val, which = "time"))
+ndvi_val
+```
+
+Maximum Value Composite. Would be nice to do this on proxy object
+
+```{r}
+quant <- function(x) quantile(x, probs = 0.99, na.rm = TRUE)
+
+ndvi_val_2w = aggregate(
+  ndvi_val,
+  by = "14 days",
+  FUN = quant
+)
+
+plot(ndvi_val_2w)
+```
+
+Time Series
+
+```{r}
+
+# this is useful for aggregating to polygons
+#ndvi_val_agg = aggregate(
+#  ndvi_val,
+#  by = aoi_proj,
+#  FUN = mean, na.rm = TRUE  # Take maximum NDVI for each month
+#)
+
+# the reduces the complete spatial dimensions
+ndvi_val_agg <- st_apply(ndvi_val_2w, MARGIN = "time", FUN = median, na.rm = TRUE)
+ndvi_df <- data.frame(ndvi_val_agg)
+
+ggplot(ndvi_df, aes(x = time, y = median)) +
+  geom_line() +  
+  geom_point() +  
+  labs(title = "NDVI Time Series",
+       x = "Date",
+       y = "Mean NDVI")
+
+
+```
+
+# Feedback
+
+-   R on terrabyte
+    -   Packages?
+    -   gdalcubes, terra
+    -   python vs R usage
+    -   Processing APIs? OGC API Processes, openEO?
+    -   Parallel Processing (<https://r-spatial.org/r/2023/09/21/stars-parallel.html>)
+-   User needs
+    -   Use Cases?
+    -   How would your typical optical workflow look like?
+    -   Your biggest bottle neck?
+    -   What is blocking you from using tb?
+    -   renv?
